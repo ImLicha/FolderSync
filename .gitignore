@@ -363,5 +363,5 @@ MigrationBackup/
 FodyWeavers.xsd
 
 root/
-
+logs/
 backup/

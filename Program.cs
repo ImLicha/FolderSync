@@ -6,6 +6,7 @@ using System.Timers;
 class Program
 {
     static System.Timers.Timer syncTimer;
+    static string logsPath = "";
 
     private static Dictionary<FileInfo, byte[]> sourceFileHashes = new Dictionary<FileInfo, byte[]>();
     //private static Dictionary<FileInfo, byte[]> destFileHashes = new Dictionary<FileInfo, byte[]>();
@@ -16,14 +17,13 @@ class Program
             DirectoryInfo dir = new(sourceDir);
             DirectoryInfo destDir = new(destinationDir);
 
+            Log(logsPath, $"Attempting to create directory at: {destinationDir}");
             Directory.CreateDirectory(destinationDir);
 
             foreach (FileInfo file in dir.GetFiles())
             {
                 string targetFilePath = Path.Combine(destinationDir, file.Name);
                 string sourceFilePath = Path.Combine(sourceDir, file.Name);
-
-                Console.WriteLine($"Sprawdzanie {file.FullName} → {targetFilePath}");
 
                 byte[] sourceHash = GetChecksum(sourceFilePath);
                 sourceFileHashes[file] = sourceHash;
@@ -38,12 +38,8 @@ class Program
 
                 if (needsCopy)
                 {
-                    Console.WriteLine($"Kopiuję {file.Name}");
+                    Log(logsPath, $"Copying {file.Name}");
                     file.CopyTo(targetFilePath, true);
-                }
-                else
-                {
-                    Console.WriteLine($"Pomijam {file.Name} (identyczny hash)");
                 }
             }
 
@@ -58,41 +54,41 @@ class Program
         }
         catch (FileNotFoundException)
         {
-            Console.WriteLine("The file or directory cannot be found.");
+            Log(logsPath, "The file or directory cannot be found.");
         }
         catch (DirectoryNotFoundException)
         {
-            Console.WriteLine("The file or directory cannot be found.");
+            Log(logsPath, "The file or directory cannot be found.");
         }
         catch (DriveNotFoundException)
         {
-            Console.WriteLine("The drive specified in 'path' is invalid.");
+            Log(logsPath, "The drive specified in 'path' is invalid.");
         }
         catch (PathTooLongException)
         {
-            Console.WriteLine("'path' exceeds the maximum supported path length.");
+            Log(logsPath, "'path' exceeds the maximum supported path length.");
         }
         catch (UnauthorizedAccessException)
         {
-            Console.WriteLine("You do not have permission to create this file.");
+            Log(logsPath, "You do not have permission to create this file.");
         }
         catch (IOException e) when ((e.HResult & 0x0000FFFF) == 32)
         {
-            Console.WriteLine("There is a sharing violation.");
+            Log(logsPath, "There is a sharing violation.");
         }
         catch (IOException e) when ((e.HResult & 0x0000FFFF) == 80)
         {
-            Console.WriteLine("The file already exists.");
+            Log(logsPath, "The file already exists.");
         }
         catch (IOException e)
         {
-            Console.WriteLine($"An exception occurred:\nError code: " +
+            Log(logsPath, $"An exception occurred:\nError code: " +
                               $"{e.HResult & 0x0000FFFF}\nMessage: {e.Message}");
         }
 
     }
 
-    static void RemoveFromDirectory(string destinationDir, string baseSourceDir)
+    static void RemoveFromDirectory(string destinationDir, string baseSourceDir, string rootDestinationDir)
     {
         DirectoryInfo destDir = new(destinationDir);
 
@@ -103,32 +99,33 @@ class Program
 
         foreach (FileInfo file in destDir.GetFiles())
         {
-            string relativePath = Path.GetRelativePath(destinationDir, file.FullName);
+            string relativePath = Path.GetRelativePath(rootDestinationDir, file.FullName);
             string sourceFilePath = Path.Combine(baseSourceDir, relativePath);
 
             if (!sourcePaths.Contains(Path.GetFullPath(sourceFilePath)))
             {
-                Console.WriteLine($"Deleting file: {file.FullName} (not in source)");
+                Log(logsPath, $"Deleting file: {file.FullName} (not in source)");
                 file.Delete();
             }
         }
 
         foreach (DirectoryInfo subDir in destDir.GetDirectories())
         {
-            string relativeDir = Path.GetRelativePath(destinationDir, subDir.FullName);
+            string relativeDir = Path.GetRelativePath(rootDestinationDir, subDir.FullName);
             string sourceDirPath = Path.Combine(baseSourceDir, relativeDir);
 
             if (!Directory.Exists(sourceDirPath))
             {
-                Console.WriteLine($"Deleting directory: {subDir.FullName} (not in source)");
+                Log(logsPath, $"Deleting directory: {subDir.FullName} (not in source)");
                 subDir.Delete(true);
             }
             else
             {
-                RemoveFromDirectory(subDir.FullName, baseSourceDir);
+                RemoveFromDirectory(subDir.FullName, baseSourceDir, rootDestinationDir);
             }
         }
     }
+
 
     //static void GetAllDirectoriesFromDestination(string destinationDir)
     //{
@@ -165,15 +162,42 @@ class Program
             using (var stream = File.OpenRead(filePath))
             {
                 byte[] hash = md5.ComputeHash(stream);
-                Console.WriteLine($"MD5 checksum of {filePath}: {BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant()}");
+                //Console.WriteLine($"MD5 checksum of {filePath}: {BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant()}");
                 return hash;
             }
         }
     }
 
-    void Update()
+    static void Log(string logsPath, string message)
     {
-        
+        using (StreamWriter sw = File.AppendText(logsPath))
+        {
+            Console.WriteLine(message);
+            sw.WriteLine($"{DateTime.Now}: {message}");
+        }
+    }
+
+    static string NormalizeLogPath(string inputPath)
+    {
+        if (string.IsNullOrWhiteSpace(inputPath))
+            throw new ArgumentException("Log path cannot be empty.");
+
+        if (Directory.Exists(inputPath) ||
+            inputPath.EndsWith("\\") ||
+            inputPath.EndsWith("/") ||
+            string.IsNullOrEmpty(Path.GetExtension(inputPath)))
+        {
+            Directory.CreateDirectory(inputPath); 
+            string logFile = Path.Combine(inputPath, "data.log");
+            return logFile;
+        }
+        else
+        {
+            string directory = Path.GetDirectoryName(inputPath);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
+            return inputPath;
+        }
     }
 
     static void Main()
@@ -182,19 +206,21 @@ class Program
         string source = Console.ReadLine();
         Console.Write("Set folder destination path: ");
         string destination = Console.ReadLine();
-        Console.Write("Set logs file path: ");
-        string logs = Console.ReadLine();
-        Console.Write("Set timer: ");
+        Console.Write("Set log file path: ");
+        string logsInput = Console.ReadLine();
+        Console.Write("Set timer (in seconds): ");
         string timer = Console.ReadLine();
+
+        logsPath = NormalizeLogPath(logsInput);
 
         string baseSourceDir = Path.GetFullPath(source);
 
         if (!double.TryParse(timer, out double intervalSeconds))
         {
-            Console.WriteLine("Invalid timer value, using default 10 seconds.");
+            Log(logsPath, "Invalid timer value, using default 10 seconds.");
             intervalSeconds = 10;
         }
-        
+
         bool isSyncing = false;
 
         syncTimer = new System.Timers.Timer(intervalSeconds * 1000);
@@ -202,7 +228,7 @@ class Program
         {
             if (isSyncing)
             {
-                Console.WriteLine("Sync is already in progress, skipping this interval.");
+                Log(logsPath, "Sync is already in progress, skipping this interval.");
                 return;
             }
 
@@ -210,18 +236,18 @@ class Program
 
             try
             {
-                Console.WriteLine($"Synchronizing folders at {DateTime.Now}...");
+                Log(logsPath, $"Synchronizing folders at {DateTime.Now}...");
 
                 sourceFileHashes.Clear();
                 GetAllFilesFromSource(source);
                 CopyDirectory(source, destination, true);
-                RemoveFromDirectory(destination, baseSourceDir);
+                RemoveFromDirectory(destination, baseSourceDir, destination);
 
-                Console.WriteLine("Sync completed.");
+                Log(logsPath, "Sync completed.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"An error occurred: {ex.Message}");
+                Log(logsPath, $"An error occurred: {ex.Message}");
             }
             finally
             {
@@ -234,7 +260,8 @@ class Program
 
         Console.WriteLine("Press Enter to stop...");
         Console.ReadLine();
-
+        Log(logsPath, "Program stopped!");
     }
+
 }
 
